@@ -215,8 +215,8 @@ Este archivo centraliza todos los pines y constantes del proyecto. Se irá compl
 #define HEARTBEAT_INTERVAL_MS  1000  // Se espera un heartbeat cada 1s
 
 // ─── BUS I²C COMPARTIDO (INA219 + VL53L0X) ─────────────────────────────────
-#define I2C_SDA          21
-#define I2C_SCL          22
+#define I2C_SDA           8
+#define I2C_SCL           9
 #define INA219_I2C_ADDRESS 0x40
 
 // ─── SENSORES CLIFF VL53L0X (I²C) ───────────────────────────────────────────
@@ -309,13 +309,15 @@ El **INA219** permite medir en **high-side** la batería completa del robot sin 
 
 El INA219 comparte el mismo bus I²C que más adelante usarán los VL53L0X. No requiere GPIOs nuevos.
 
+> **Nota de placa**: En la **Freenove ESP32-S3 WROOM** usada por este proyecto no conviene asumir el clásico par `GPIO 21/22` de otras ESP32. En PlatformIO con el board `freenove_esp32_s3_wroom` y el core Arduino `esp32s3`, el bus I²C de este proyecto se fija en **GPIO 8 (SDA)** y **GPIO 9 (SCL)**.
+
 ```
 INA219             ESP32-S3 / Alimentación
 ──────             ───────────────────────
 VCC        ──────  3.3V del ESP32
 GND        ──────  GND común
-SDA        ──────  GPIO 21
-SCL        ──────  GPIO 22
+SDA        ──────  GPIO 8
+SCL        ──────  GPIO 9
 VIN+       ──────  Positivo principal desde interruptor / salida del BMS
 VIN-       ──────  Nodo positivo que alimenta Buck #1 y Buck #2
 ```
@@ -633,7 +635,7 @@ void loop() {
 
 1. Con la batería desconectada, verificar con multímetro que los Buck Converters dan exactamente 5V en su salida antes de conectar cualquier componente.
 2. Insertar el INA219 en la línea positiva principal, entre el interruptor y la distribución hacia los dos buck converters.
-3. Conectar `VCC` del INA219 a `3.3V`, `GND` a GND, `SDA` a GPIO 21 y `SCL` a GPIO 22.
+3. Conectar `VCC` del INA219 a `3.3V`, `GND` a GND, `SDA` a GPIO 8 y `SCL` a GPIO 9.
 4. Subir el código al ESP32.
 5. Abrir Serial Monitor (115200 baud).
 6. Verificar que aparece `[BATTERY] INA219 iniciado @ 0x40`. Si aparece error, revisar alimentación a 3.3V, dirección I²C y cableado `SDA/SCL`.
@@ -656,7 +658,7 @@ void loop() {
 **Problemas comunes**:
 - *Un motor gira al revés*: intercambiar OUT1/OUT2 de ese motor en el L298N.
 - *Los motores no giran aunque el LED del L298N enciende*: verificar que el jumper de ENA/ENB esté **quitado** y que el pin GPIO esté enviando PWM.
-- *El INA219 no aparece*: revisar que el módulo esté alimentado con **3.3V** y que `SDA/SCL` estén en GPIO 21/22.
+- *El INA219 no aparece*: revisar que el módulo esté alimentado con **3.3V** y que `SDA/SCL` estén en GPIO 8/9.
 - *Voltaje correcto pero corriente en cero*: verificar que la línea positiva de la batería realmente pase por `VIN+` y `VIN-` del INA219.
 - *Corriente negativa*: invertir `VIN+` y `VIN-`.
 - *Lectura saturada al arrancar motores*: usar una calibración más alta o considerar un sensor con mayor margen si el robot supera el rango del shunt.
@@ -1167,7 +1169,7 @@ void loop() {
 ## 6. Etapa 4 — BLE (Bluetooth Low Energy)
 
 ### Objetivo
-Conectar el ESP32 con un dispositivo Android (o app BLE genérica como **nRF Connect**) para recibir comandos de movimiento y LED, y enviar telemetría. Implementar el heartbeat para el modo BRAIN_OFFLINE.
+Conectar el ESP32 con un dispositivo Android (o app BLE genérica como **nRF Connect**) para recibir primitivas físicas (`turn_*`, `move_*`, `led_color`), secuencias compiladas y enviar telemetría. Implementar el heartbeat para el modo BRAIN_OFFLINE.
 
 > **Estrategia de prueba incremental**: Antes de integrar con la app Android de Moji, se prueba con la app gratuita **nRF Connect** (Android/iOS). Esto permite verificar el protocolo BLE de forma independiente.
 
@@ -1191,37 +1193,37 @@ Característica RX (Notify — ESP32 → Android):
 #### Formato de comandos (Android → ESP32)
 
 ```json
-// Mover en dirección continua
-{"type": "move", "direction": "forward", "speed": 150}
-{"type": "move", "direction": "backward", "speed": 150}
-{"type": "move", "direction": "left", "speed": 150}
-{"type": "move", "direction": "right", "speed": 150}
+// Primitivas físicas alineadas con la arquitectura backend v2.0
+{"type": "turn_right_deg", "degrees": 90, "speed": 25, "duration_ms": 1500}
+{"type": "turn_left_deg", "degrees": 90, "speed": 25, "duration_ms": 1500}
+{"type": "move_forward_cm", "cm": 50, "speed": 50, "duration_ms": 1500}
+{"type": "move_backward_cm", "cm": 20, "speed": 40, "duration_ms": 800}
 
 // Parar
 {"type": "stop"}
 
-// Secuencia de movimientos (para gestos compuestos)
+// Secuencia de movimientos (Android compila aquí búsquedas faciales o gestos)
 {
   "type": "move_sequence",
-  "total_duration_ms": 2400,
+  "total_duration_ms": 4500,
   "steps": [
-    {"direction": "rotate_right", "speed": 50, "duration_ms": 800},
-    {"direction": "stop",         "speed": 0,  "duration_ms": 400},
-    {"direction": "rotate_left",  "speed": 50, "duration_ms": 800},
-    {"direction": "stop",         "speed": 0,  "duration_ms": 400}
+    {"type": "turn_right_deg", "degrees": 90, "speed": 25, "duration_ms": 1500},
+    {"type": "turn_left_deg",  "degrees": 180, "speed": 25, "duration_ms": 3000}
   ]
 }
 
 // Control de LED
-{"type": "light", "r": 0, "g": 255, "b": 0, "pattern": "solid"}
-{"type": "light", "r": 255, "g": 0, "b": 0, "pattern": "blink"}
+{"type": "led_color", "r": 0, "g": 255, "b": 0, "duration_ms": 1000}
+{"type": "led_color", "r": 255, "g": 0, "b": 0, "duration_ms": 600}
 
 // Heartbeat (cada 1s desde Android)
 {"type": "heartbeat", "timestamp": 1234567890}
 
 // Solicitar telemetría
-{"type": "telemetry"}
+{"type": "telemetry", "request": "all"}
 ```
+
+El ESP32 no necesita entender aliases de alto nivel como `wave`, `nod` o `shake_head`. Android debe expandirlos previamente a `move_sequence` usando únicamente primitivas físicas.
 
 #### Formato de telemetría (ESP32 → Android)
 
@@ -1240,11 +1242,21 @@ Característica RX (Notify — ESP32 → Android):
   },
   "sensors": {
     "distance_front": 150,
-    "distance_rear": 200
+    "distance_rear": 200,
+    "cliff_front_left": 62,
+    "cliff_front_right": 61,
+    "cliff_rear": 60
   },
-  "motors": {"direction": "stop"},
+  "motors": {
+    "state": "stop",
+    "last_action": "move_forward_cm"
+  },
   "leds": {"mode": "idle"},
   "heartbeat": {"brain_online": true},
+  "safety": {
+    "cliff_active": false,
+    "obstacle_blocked": false
+  },
   "uptime": 3600
 }
 ```
@@ -1264,20 +1276,20 @@ Característica RX (Notify — ESP32 → Android):
 #include "config.h"
 
 // Callbacks de comandos recibidos
-typedef std::function<void(const char* direction, uint8_t speed)> MoveCallback;
+typedef std::function<void(JsonObject& action)>                    PrimitiveCallback;
 typedef std::function<void()>                                      StopCallback;
-typedef std::function<void(uint8_t r, uint8_t g, uint8_t b)>      LightCallback;
 typedef std::function<void(JsonArray& steps)>                      SequenceCallback;
+typedef std::function<void()>                                      TelemetryRequestCallback;
 
 class RobotBLEServer : public BLEServerCallbacks, public BLECharacteristicCallbacks {
 public:
   void begin();
   bool isConnected() const { return _connected; }
   void sendTelemetry(const String& json);
-  void registerCallbacks(MoveCallback    onMove,
-                         StopCallback    onStop,
-                         LightCallback   onLight,
-                         SequenceCallback onSequence);
+  void registerCallbacks(PrimitiveCallback        onPrimitive,
+                         StopCallback             onStop,
+                         SequenceCallback         onSequence,
+                         TelemetryRequestCallback onTelemetryRequest = nullptr);
   // Llamar periódicamente
   void update();
   bool isBrainOnline() const;
@@ -1293,10 +1305,10 @@ private:
   bool              _connected      = false;
   unsigned long     _lastHeartbeat  = 0;
   BLECharacteristic* _pRxChar       = nullptr;
-  MoveCallback      _onMove;
+  PrimitiveCallback _onPrimitive;
   StopCallback      _onStop;
-  LightCallback     _onLight;
   SequenceCallback  _onSequence;
+  TelemetryRequestCallback _onTelemetryRequest;
 
   void handleCommand(const String& json);
 };
@@ -1349,14 +1361,14 @@ void RobotBLEServer::begin() {
   Serial.println("[BLE] Advertising como 'RobotESP32'...");
 }
 
-void RobotBLEServer::registerCallbacks(MoveCallback     onMove,
-                                        StopCallback     onStop,
-                                        LightCallback    onLight,
-                                        SequenceCallback onSequence) {
-  _onMove     = onMove;
-  _onStop     = onStop;
-  _onLight    = onLight;
-  _onSequence = onSequence;
+void RobotBLEServer::registerCallbacks(PrimitiveCallback        onPrimitive,
+                                       StopCallback             onStop,
+                                       SequenceCallback         onSequence,
+                                       TelemetryRequestCallback onTelemetryRequest) {
+  _onPrimitive        = onPrimitive;
+  _onStop             = onStop;
+  _onSequence         = onSequence;
+  _onTelemetryRequest = onTelemetryRequest;
 }
 
 void RobotBLEServer::onConnect(BLEServer* server) {
@@ -1392,18 +1404,23 @@ void RobotBLEServer::handleCommand(const String& json) {
   if (strcmp(type, "heartbeat") == 0) {
     _lastHeartbeat = millis();
 
-  } else if (strcmp(type, "move") == 0 && _onMove) {
-    _onMove(doc["direction"] | "stop", doc["speed"] | 0);
-
   } else if (strcmp(type, "stop") == 0 && _onStop) {
     _onStop();
-
-  } else if (strcmp(type, "light") == 0 && _onLight) {
-    _onLight(doc["r"] | 0, doc["g"] | 0, doc["b"] | 0);
 
   } else if (strcmp(type, "move_sequence") == 0 && _onSequence) {
     JsonArray steps = doc["steps"];
     _onSequence(steps);
+
+  } else if ((strcmp(type, "turn_right_deg") == 0 ||
+              strcmp(type, "turn_left_deg") == 0 ||
+              strcmp(type, "move_forward_cm") == 0 ||
+              strcmp(type, "move_backward_cm") == 0 ||
+              strcmp(type, "led_color") == 0) && _onPrimitive) {
+    JsonObject action = doc.as<JsonObject>();
+    _onPrimitive(action);
+
+  } else if (strcmp(type, "telemetry") == 0 && _onTelemetryRequest) {
+    _onTelemetryRequest();
   }
 }
 
@@ -1454,15 +1471,69 @@ LEDController    led;
 
 Direction currentDir = Direction::STOP;
 bool      brainWasOnline = false;
+const char* currentAction = "idle";
 
-Direction parseDirection(const char* s) {
-  if (strcmp(s, "forward")     == 0) return Direction::FORWARD;
-  if (strcmp(s, "backward")    == 0) return Direction::BACKWARD;
-  if (strcmp(s, "left")        == 0) return Direction::LEFT;
-  if (strcmp(s, "right")       == 0) return Direction::RIGHT;
-  if (strcmp(s, "rotate_left") == 0) return Direction::LEFT;
-  if (strcmp(s, "rotate_right")== 0) return Direction::RIGHT;
-  return Direction::STOP;
+const char* directionToString(Direction dir) {
+  switch (dir) {
+    case Direction::FORWARD:  return "forward";
+    case Direction::BACKWARD: return "backward";
+    case Direction::LEFT:     return "left";
+    case Direction::RIGHT:    return "right";
+    default:                  return "stop";
+  }
+}
+
+void finishMotionAction() {
+  motors.stop();
+  currentDir = Direction::STOP;
+  if (!battery.isLow()) {
+    led.setMode(LEDMode::IDLE);
+  }
+}
+
+void executePrimitiveAction(JsonObject& action) {
+  const char* type       = action["type"] | "";
+  uint8_t     speed      = action["speed"] | 0;
+  uint32_t    durationMs = action["duration_ms"] | 0;
+
+  if (strcmp(type, "turn_right_deg") == 0) {
+    currentAction = "turn_right_deg";
+    currentDir = Direction::RIGHT;
+    led.setMode(LEDMode::MOVING);
+    motors.runFor(Direction::RIGHT, speed, durationMs);
+    finishMotionAction();
+
+  } else if (strcmp(type, "turn_left_deg") == 0) {
+    currentAction = "turn_left_deg";
+    currentDir = Direction::LEFT;
+    led.setMode(LEDMode::MOVING);
+    motors.runFor(Direction::LEFT, speed, durationMs);
+    finishMotionAction();
+
+  } else if (strcmp(type, "move_forward_cm") == 0) {
+    currentAction = "move_forward_cm";
+    currentDir = Direction::FORWARD;
+    led.setMode(LEDMode::MOVING);
+    motors.runFor(Direction::FORWARD, speed, durationMs);
+    finishMotionAction();
+
+  } else if (strcmp(type, "move_backward_cm") == 0) {
+    currentAction = "move_backward_cm";
+    currentDir = Direction::BACKWARD;
+    led.setMode(LEDMode::MOVING);
+    motors.runFor(Direction::BACKWARD, speed, durationMs);
+    finishMotionAction();
+
+  } else if (strcmp(type, "led_color") == 0) {
+    currentAction = "led_color";
+    led.setCustom(action["r"] | 0, action["g"] | 0, action["b"] | 0);
+    if (durationMs > 0) {
+      delay(durationMs);
+      if (!battery.isLow()) {
+        led.setMode(LEDMode::IDLE);
+      }
+    }
+  }
 }
 
 String buildTelemetry() {
@@ -1485,8 +1556,18 @@ String buildTelemetry() {
   sens["distance_front"] = frontSensor.readCm();
   sens["distance_rear"]  = rearSensor.readCm();
 
+  JsonObject motorsJson = doc.createNestedObject("motors");
+  motorsJson["state"] = directionToString(currentDir);
+  motorsJson["last_action"] = currentAction;
+
   JsonObject heartbeat = doc.createNestedObject("heartbeat");
   heartbeat["brain_online"] = bleServer.isBrainOnline();
+
+  JsonObject safetyJson = doc.createNestedObject("safety");
+  safetyJson["cliff_active"] = false;
+  safetyJson["obstacle_blocked"] =
+    (currentDir == Direction::FORWARD && frontSensor.isObstacle()) ||
+    (currentDir == Direction::BACKWARD && rearSensor.isObstacle());
 
   doc["uptime"] = millis() / 1000;
 
@@ -1509,46 +1590,30 @@ void setup() {
 
   // Registrar callbacks BLE
   bleServer.registerCallbacks(
-    // onMove
-    [](const char* dir, uint8_t speed) {
-      currentDir = parseDirection(dir);
-      if (currentDir == Direction::STOP) {
-        motors.stop();
-        led.setMode(LEDMode::IDLE);
-      } else {
-        motors.move(currentDir, speed);
-        led.setMode(LEDMode::MOVING);
-      }
+    // onPrimitive
+    [](JsonObject& action) {
+      executePrimitiveAction(action);
     },
     // onStop
     []() {
+      currentAction = "stop";
       currentDir = Direction::STOP;
       motors.stop();
       led.setMode(LEDMode::IDLE);
-    },
-    // onLight
-    [](uint8_t r, uint8_t g, uint8_t b) {
-      led.setCustom(r, g, b);
     },
     // onSequence
     [](JsonArray& steps) {
       for (JsonObject step : steps) {
-        const char* dir   = step["direction"] | "stop";
-        uint8_t     speed = step["speed"]     | 0;
-        uint32_t    dur   = step["duration_ms"] | 0;
-        Direction   d     = parseDirection(dir);
-        if (d == Direction::STOP) {
-          motors.stop();
-          led.setMode(LEDMode::IDLE);
-        } else {
-          motors.move(d, speed);
-          led.setMode(LEDMode::MOVING);
-        }
-        delay(dur);  // Bloquea — para producción se recomienda estado máquina
+        executePrimitiveAction(step);
       }
-      motors.stop();
-      currentDir = Direction::STOP;
-      led.setMode(LEDMode::IDLE);
+      currentAction = "idle";
+      finishMotionAction();
+    },
+    // onTelemetryRequest
+    []() {
+      if (bleServer.isConnected()) {
+        bleServer.sendTelemetry(buildTelemetry());
+      }
     }
   );
 
@@ -1608,18 +1673,19 @@ void loop() {
 3. Conectar. En el Serial Monitor debe aparecer `[BLE] Cliente conectado`.
 4. En nRF Connect, ir al servicio `6E400001...` → característica `6E400002` (Write).
 5. Enviar el JSON: `{"type":"heartbeat","timestamp":0}` → en el Serial Monitor aparece `[BLE] CMD recibido: heartbeat`.
-6. Enviar: `{"type":"move","direction":"forward","speed":150}` → el robot avanza y el LED se pone verde.
-7. Enviar: `{"type":"stop"}` → el robot se detiene.
-8. Suscribirse a notificaciones en la característica `6E400003` (Notify). Cada 1 segundo debe llegar el JSON de telemetría con `bus_voltage`, `load_voltage`, `current_ma`, `power_mw` y las distancias.
-9. **Probar BRAIN_OFFLINE**: conectar con nRF Connect, mover el robot, y luego **no enviar heartbeats** durante 3 segundos. El robot debe:
+6. Enviar: `{"type":"move_forward_cm","cm":50,"speed":150,"duration_ms":1500}` → el robot avanza, termina solo y el LED se pone verde durante la acción.
+7. Enviar: `{"type":"led_color","r":0,"g":255,"b":0,"duration_ms":1000}` → el LED cambia temporalmente a verde.
+8. Enviar: `{"type":"move_sequence","total_duration_ms":4500,"steps":[{"type":"turn_right_deg","degrees":90,"speed":25,"duration_ms":1500},{"type":"turn_left_deg","degrees":180,"speed":25,"duration_ms":3000}]}` → el robot ejecuta la búsqueda física de rostro.
+9. Suscribirse a notificaciones en la característica `6E400003` (Notify). Cada 1 segundo debe llegar el JSON de telemetría con `bus_voltage`, `load_voltage`, `current_ma`, `power_mw`, distancias y estado de seguridad.
+10. **Probar BRAIN_OFFLINE**: conectar con nRF Connect, mover el robot, y luego **no enviar heartbeats** durante 3 segundos. El robot debe:
    - Detenerse solo
    - El LED cambia a ámbar pulsante
    - Serial Monitor imprime `[SAFETY] BRAIN_OFFLINE → STOP + LED ámbar`
-10. Enviar un heartbeat → el robot vuelve a IDLE con LED azul.
+11. Enviar un heartbeat → el robot vuelve a IDLE con LED azul.
 
 **Criterios de éxito**:
 - ✅ El dispositivo aparece como `RobotESP32` al escanear
-- ✅ Los comandos de movimiento mueven el robot correctamente
+- ✅ Las primitivas `turn_*`, `move_*` y `led_color` se ejecutan correctamente
 - ✅ La telemetría llega cada 1 segundo a nRF Connect
 - ✅ El bloque `battery` incluye voltaje, corriente, potencia y estado del sensor INA219
 - ✅ BRAIN_OFFLINE se activa a los 3s sin heartbeat
@@ -1660,8 +1726,8 @@ Los tres sensores comparten los pines I²C (SDA y SCL) pero cada uno tiene su pr
 ```
 ESP32-S3        VL53L0X (los 3 comparten I²C)
 ────────        ──────────────────────────────
-GPIO 21 (SDA) ──── SDA de los 3 sensores + INA219 (bus compartido)
-GPIO 22 (SCL) ──── SCL de los 3 sensores + INA219 (bus compartido)
+GPIO 8 (SDA)  ──── SDA de los 3 sensores + INA219 (bus compartido)
+GPIO 9 (SCL)  ──── SCL de los 3 sensores + INA219 (bus compartido)
 3.3V          ──── VIN de los 3 sensores
 GND           ──── GND de los 3 sensores
 
@@ -1851,15 +1917,74 @@ LEDController    led;
 Direction currentDir    = Direction::STOP;
 bool      brainWasOnline = false;
 bool      cliffActive    = false;
+const char* currentAction = "idle";
 
-Direction parseDirection(const char* s) {
-  if (strcmp(s, "forward")     == 0) return Direction::FORWARD;
-  if (strcmp(s, "backward")    == 0) return Direction::BACKWARD;
-  if (strcmp(s, "left")        == 0) return Direction::LEFT;
-  if (strcmp(s, "right")       == 0) return Direction::RIGHT;
-  if (strcmp(s, "rotate_left") == 0) return Direction::LEFT;
-  if (strcmp(s, "rotate_right")== 0) return Direction::RIGHT;
-  return Direction::STOP;
+const char* directionToString(Direction dir) {
+  switch (dir) {
+    case Direction::FORWARD:  return "forward";
+    case Direction::BACKWARD: return "backward";
+    case Direction::LEFT:     return "left";
+    case Direction::RIGHT:    return "right";
+    default:                  return "stop";
+  }
+}
+
+void finishMotionAction() {
+  motors.stop();
+  currentDir = Direction::STOP;
+  if (!cliffActive && !battery.isLow()) {
+    led.setMode(LEDMode::IDLE);
+  }
+}
+
+void executePrimitiveAction(JsonObject& action) {
+  const char* type       = action["type"] | "";
+  uint8_t     speed      = action["speed"] | 0;
+  uint32_t    durationMs = action["duration_ms"] | 0;
+
+  if (cliffActive && strcmp(type, "led_color") != 0) {
+    Serial.println("[SAFETY] Cliff activo — comando ignorado");
+    return;
+  }
+
+  if (strcmp(type, "turn_right_deg") == 0) {
+    currentAction = "turn_right_deg";
+    currentDir = Direction::RIGHT;
+    led.setMode(LEDMode::MOVING);
+    motors.runFor(Direction::RIGHT, speed, durationMs);
+    finishMotionAction();
+
+  } else if (strcmp(type, "turn_left_deg") == 0) {
+    currentAction = "turn_left_deg";
+    currentDir = Direction::LEFT;
+    led.setMode(LEDMode::MOVING);
+    motors.runFor(Direction::LEFT, speed, durationMs);
+    finishMotionAction();
+
+  } else if (strcmp(type, "move_forward_cm") == 0) {
+    currentAction = "move_forward_cm";
+    currentDir = Direction::FORWARD;
+    led.setMode(LEDMode::MOVING);
+    motors.runFor(Direction::FORWARD, speed, durationMs);
+    finishMotionAction();
+
+  } else if (strcmp(type, "move_backward_cm") == 0) {
+    currentAction = "move_backward_cm";
+    currentDir = Direction::BACKWARD;
+    led.setMode(LEDMode::MOVING);
+    motors.runFor(Direction::BACKWARD, speed, durationMs);
+    finishMotionAction();
+
+  } else if (strcmp(type, "led_color") == 0) {
+    currentAction = "led_color";
+    led.setCustom(action["r"] | 0, action["g"] | 0, action["b"] | 0);
+    if (durationMs > 0) {
+      delay(durationMs);
+      if (!cliffActive && !battery.isLow()) {
+        led.setMode(LEDMode::IDLE);
+      }
+    }
+  }
 }
 
 String buildTelemetry() {
@@ -1885,8 +2010,18 @@ String buildTelemetry() {
   sens["distance_front"]    = frontSensor.readCm();
   sens["distance_rear"]     = rearSensor.readCm();
 
+  JsonObject motorsJson = doc.createNestedObject("motors");
+  motorsJson["state"] = directionToString(currentDir);
+  motorsJson["last_action"] = currentAction;
+
   JsonObject hb = doc.createNestedObject("heartbeat");
   hb["brain_online"] = bleServer.isBrainOnline();
+
+  JsonObject safetyJson = doc.createNestedObject("safety");
+  safetyJson["cliff_active"] = cliffActive;
+  safetyJson["obstacle_blocked"] =
+    (currentDir == Direction::FORWARD && frontSensor.isObstacle()) ||
+    (currentDir == Direction::BACKWARD && rearSensor.isObstacle());
 
   doc["uptime"] = millis() / 1000;
 
@@ -1909,29 +2044,25 @@ void setup() {
   led.setMode(LEDMode::IDLE);
 
   bleServer.registerCallbacks(
-    [](const char* dir, uint8_t speed) {
-      if (cliffActive) { Serial.println("[SAFETY] Cliff activo — comando ignorado"); return; }
-      currentDir = parseDirection(dir);
-      if (currentDir == Direction::STOP) { motors.stop(); led.setMode(LEDMode::IDLE); }
-      else                               { motors.move(currentDir, speed); led.setMode(LEDMode::MOVING); }
+    [](JsonObject& action) {
+      executePrimitiveAction(action);
     },
     []() {
+      currentAction = "stop";
       currentDir = Direction::STOP;
       motors.stop();
       led.setMode(LEDMode::IDLE);
     },
-    [](uint8_t r, uint8_t g, uint8_t b) { led.setCustom(r, g, b); },
     [](JsonArray& steps) {
       for (JsonObject step : steps) {
         if (cliffActive) break;
-        Direction d = parseDirection(step["direction"] | "stop");
-        uint8_t   s = step["speed"] | 0;
-        uint32_t  t = step["duration_ms"] | 0;
-        if (d == Direction::STOP) { motors.stop(); led.setMode(LEDMode::IDLE); }
-        else                      { motors.move(d, s); led.setMode(LEDMode::MOVING); }
-        delay(t);
+        executePrimitiveAction(step);
       }
-      motors.stop(); currentDir = Direction::STOP; led.setMode(LEDMode::IDLE);
+      currentAction = "idle";
+      finishMotionAction();
+    },
+    []() {
+      if (bleServer.isConnected()) bleServer.sendTelemetry(buildTelemetry());
     }
   );
 
@@ -2035,11 +2166,11 @@ El umbral `CLIFF_THRESHOLD_MM = 80` (en `config.h`) debe calibrarse según la al
 | 5  | HC-SR04 Frontal — Echo | Entrada — ¡divisor resistivo 2kΩ+3kΩ! |
 | 6  | HC-SR04 Trasero — Trigger | Salida digital |
 | 7  | HC-SR04 Trasero — Echo | Entrada — ¡divisor resistivo 2kΩ+3kΩ! |
+| 8  | I²C SDA (INA219 + VL53L0X × 3) | Bus compartido |
+| 9  | I²C SCL (INA219 + VL53L0X × 3) | Bus compartido |
 | 11 | XSHUT VL53L0X Cliff Front-Left | control I²C address |
 | 12 | XSHUT VL53L0X Cliff Front-Right | control I²C address |
 | 13 | XSHUT VL53L0X Cliff Rear | control I²C address |
-| 21 | I²C SDA (INA219 + VL53L0X × 3) | Bus compartido |
-| 22 | I²C SCL (INA219 + VL53L0X × 3) | Bus compartido |
 | 38 | LED RGB — Canal Rojo | PWM LEDC ch0, 220Ω serie |
 | 39 | LED RGB — Canal Verde | PWM LEDC ch1, 220Ω serie |
 | 40 | LED RGB — Canal Azul | PWM LEDC ch2, 220Ω serie |
@@ -2048,7 +2179,7 @@ El umbral `CLIFF_THRESHOLD_MM = 80` (en `config.h`) debe calibrarse según la al
 | 47 | L298N IN3 — Motor Der FWD | Salida digital |
 | 48 | L298N IN4 — Motor Der REV | Salida digital |
 
-**Pines libres recomendados para futuras expansiones**: GPIO 9, 10, 14, 15, 16, 17 y 18.
+**Pines libres recomendados para futuras expansiones**: GPIO 10, 14, 15, 16, 17 y 18.
 
 **Pines libres condicionales**: GPIO 43 y 44 pueden usarse si no necesitas UART0 dedicado para otro periférico.
 
