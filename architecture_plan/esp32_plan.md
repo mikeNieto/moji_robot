@@ -1192,12 +1192,14 @@ Característica RX (Notify — ESP32 → Android):
 
 #### Formato de comandos (Android → ESP32)
 
+> **Nota sobre `speed` en movimientos**: en el firmware actual `speed` se interpreta como PWM crudo en el rango `0–255`, pero para garantizar que el robot siempre arranque se aplica una normalización antes de mover: cualquier valor entre `1` y `129` se convierte a `130`, y cualquier valor mayor a `255` se limita a `255`.
+
 ```json
 // Primitivas físicas alineadas con la arquitectura backend v2.0
-{"type": "turn_right_deg", "degrees": 90, "speed": 25, "duration_ms": 1500}
-{"type": "turn_left_deg", "degrees": 90, "speed": 25, "duration_ms": 1500}
-{"type": "move_forward_cm", "cm": 50, "speed": 50, "duration_ms": 1500}
-{"type": "move_backward_cm", "cm": 20, "speed": 40, "duration_ms": 800}
+{"type": "turn_right_deg", "degrees": 90, "speed": 130, "duration_ms": 1500}
+{"type": "turn_left_deg", "degrees": 90, "speed": 130, "duration_ms": 1500}
+{"type": "move_forward_cm", "cm": 50, "speed": 150, "duration_ms": 1500}
+{"type": "move_backward_cm", "cm": 20, "speed": 130, "duration_ms": 800}
 
 // Parar
 {"type": "stop"}
@@ -1207,8 +1209,8 @@ Característica RX (Notify — ESP32 → Android):
   "type": "move_sequence",
   "total_duration_ms": 4500,
   "steps": [
-    {"type": "turn_right_deg", "degrees": 90, "speed": 25, "duration_ms": 1500},
-    {"type": "turn_left_deg",  "degrees": 180, "speed": 25, "duration_ms": 3000}
+    {"type": "turn_right_deg", "degrees": 90, "speed": 130, "duration_ms": 1500},
+    {"type": "turn_left_deg",  "degrees": 180, "speed": 130, "duration_ms": 3000}
   ]
 }
 
@@ -1674,8 +1676,8 @@ void loop() {
 4. En nRF Connect, ir al servicio `6E400001...` → característica `6E400002` (Write).
 5. Enviar el JSON: `{"type":"heartbeat","timestamp":0}` → en el Serial Monitor aparece `[BLE] CMD recibido: heartbeat`.
 6. Enviar: `{"type":"move_forward_cm","cm":50,"speed":150,"duration_ms":1500}` → el robot avanza, termina solo y el LED se pone verde durante la acción.
-7. Enviar: `{"type":"led_color","r":0,"g":255,"b":0,"duration_ms":1000}` → el LED cambia temporalmente a verde.
-8. Enviar: `{"type":"move_sequence","total_duration_ms":4500,"steps":[{"type":"turn_right_deg","degrees":90,"speed":25,"duration_ms":1500},{"type":"turn_left_deg","degrees":180,"speed":25,"duration_ms":3000}]}` → el robot ejecuta la búsqueda física de rostro.
+7. Enviar: `{"type":"led_color","r":0,"g":255,"b":0,"duration_ms":1000}` → el LED cambia temporalmente a verde y luego vuelve a IDLE.
+8. Enviar: `{"type":"move_sequence","total_duration_ms":4500,"steps":[{"type":"turn_right_deg","degrees":90,"speed":130,"duration_ms":1500},{"type":"turn_left_deg","degrees":180,"speed":130,"duration_ms":3000}]}` → el robot ejecuta la búsqueda física de rostro; durante la secuencia el LED permanece verde y al finalizar vuelve a IDLE.
 9. Suscribirse a notificaciones en la característica `6E400003` (Notify). Cada 1 segundo debe llegar el JSON de telemetría con `bus_voltage`, `load_voltage`, `current_ma`, `power_mw`, distancias y estado de seguridad.
 10. **Probar BRAIN_OFFLINE**: conectar con nRF Connect, mover el robot, y luego **no enviar heartbeats** durante 3 segundos. El robot debe:
    - Detenerse solo
@@ -1686,6 +1688,9 @@ void loop() {
 **Criterios de éxito**:
 - ✅ El dispositivo aparece como `RobotESP32` al escanear
 - ✅ Las primitivas `turn_*`, `move_*` y `led_color` se ejecutan correctamente
+- ✅ Si un comando de movimiento llega con `speed` entre `1` y `129`, el firmware lo eleva automáticamente a `130`
+- ✅ Si un comando de movimiento llega con `speed` mayor a `255`, el firmware lo limita a `255`
+- ✅ Al terminar cualquier movimiento o secuencia, el LED vuelve a IDLE (azul respiración)
 - ✅ La telemetría llega cada 1 segundo a nRF Connect
 - ✅ El bloque `battery` incluye voltaje, corriente, potencia y estado del sensor INA219
 - ✅ BRAIN_OFFLINE se activa a los 3s sin heartbeat

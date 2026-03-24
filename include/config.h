@@ -45,8 +45,8 @@
 #define HEARTBEAT_INTERVAL_MS  1000  // Se espera un heartbeat cada 1s
 
 // ─── BUS I²C COMPARTIDO (INA219 + VL53L0X) ─────────────────────────────────
-#define I2C_SDA          21
-#define I2C_SCL          22
+#define I2C_SDA           8
+#define I2C_SCL           9
 #define INA219_I2C_ADDRESS 0x40
 
 // ─── SENSORES CLIFF VL53L0X (I²C) ───────────────────────────────────────────
