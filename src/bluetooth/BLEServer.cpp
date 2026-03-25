@@ -1,5 +1,7 @@
 #include "bluetooth/BLEServer.h"
 
+#include <cstring>
+
 #define SERVICE_UUID  "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
 #define CHAR_TX_UUID  "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"  // Write (Android → ESP32)
 #define CHAR_RX_UUID  "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"  // Notify (ESP32 → Android)
@@ -63,17 +65,36 @@ void RobotBLEServer::onDisconnect(BLEServer* server) {
 }
 
 void RobotBLEServer::onWrite(BLECharacteristic* characteristic) {
-  String value = characteristic->getValue().c_str();
-  if (value.length() > 0) {
-    handleCommand(value);
+  std::string value = characteristic->getValue();
+  if (value.empty()) {
+    return;
+  }
+
+  size_t copyLength = value.length();
+  if (copyLength > BLE_MTU_SIZE) {
+    copyLength = BLE_MTU_SIZE;
+  }
+
+  taskENTER_CRITICAL(&_commandMux);
+  memcpy(_pendingCommand, value.c_str(), copyLength);
+  _pendingCommand[copyLength] = '\0';
+  _hasPendingCommand = true;
+  taskEXIT_CRITICAL(&_commandMux);
+
+  if (value.length() > BLE_MTU_SIZE) {
+    Serial.printf("[BLE] Payload truncado a %u bytes\n", BLE_MTU_SIZE);
   }
 }
 
-void RobotBLEServer::handleCommand(const String& json) {
-  StaticJsonDocument<512> doc;
+void RobotBLEServer::handleCommand(const char* json) {
+  const size_t jsonLength = strlen(json);
+  Serial.printf("[BLE] RX JSON (%u bytes): %s\n", jsonLength, json);
+
+  static StaticJsonDocument<BLE_COMMAND_JSON_CAPACITY> doc;
+  doc.clear();
   DeserializationError err = deserializeJson(doc, json);
   if (err) {
-    Serial.printf("[BLE] JSON error: %s\n", err.c_str());
+    Serial.printf("[BLE] JSON error: %s | payload: %s\n", err.c_str(), json);
     return;
   }
 
@@ -115,6 +136,21 @@ bool RobotBLEServer::isBrainOnline() const {
 }
 
 void RobotBLEServer::update() {
+  char commandBuffer[BLE_MTU_SIZE + 1] = {0};
+  bool hasPendingCommand = false;
+
+  taskENTER_CRITICAL(&_commandMux);
+  if (_hasPendingCommand) {
+    memcpy(commandBuffer, _pendingCommand, sizeof(commandBuffer));
+    _hasPendingCommand = false;
+    hasPendingCommand = true;
+  }
+  taskEXIT_CRITICAL(&_commandMux);
+
+  if (hasPendingCommand) {
+    handleCommand(commandBuffer);
+  }
+
   // Detectar BRAIN_OFFLINE si hay conexión pero no heartbeat
   if (_connected && !isBrainOnline()) {
     static bool offlineLogged = false;

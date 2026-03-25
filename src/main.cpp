@@ -19,6 +19,29 @@ Direction currentDir = Direction::STOP;
 bool      brainWasOnline = false;
 const char* currentAction = "idle";
 
+enum class ActionStepKind { NONE, MOVE, LED };
+
+struct ActionStep {
+  ActionStepKind kind = ActionStepKind::NONE;
+  Direction dir = Direction::STOP;
+  uint8_t speed = 0;
+  uint32_t durationMs = 0;
+  uint8_t r = 0;
+  uint8_t g = 0;
+  uint8_t b = 0;
+  const char* actionName = "idle";
+};
+
+constexpr size_t MAX_SEQUENCE_STEPS = 16;
+
+ActionStep activeStep;
+ActionStep sequenceSteps[MAX_SEQUENCE_STEPS];
+size_t sequenceStepCount = 0;
+size_t sequenceStepIndex = 0;
+unsigned long activeStepStartedAt = 0;
+bool activeStepRunning = false;
+bool sequenceRunning = false;
+
 uint8_t normalizeMotionSpeed(int requestedSpeed) {
   if (requestedSpeed > 255) {
     return 255;
@@ -48,55 +71,169 @@ const char* directionToString(Direction dir) {
 void finishMotionAction() {
   motors.stop();
   currentDir = Direction::STOP;
-    currentAction = "idle";
+  currentAction = "idle";
+  led.setMode(LEDMode::IDLE);
+}
+
+bool buildActionStep(JsonObject& action, ActionStep& step) {
+  const char* type = action["type"] | "";
+  int requestedSpeed = action["speed"] | 0;
+  uint32_t durationMs = action["duration_ms"] | 0;
+
+  if (strcmp(type, "turn_right_deg") == 0) {
+    step.kind = ActionStepKind::MOVE;
+    step.dir = Direction::RIGHT;
+    step.speed = normalizeMotionSpeed(requestedSpeed);
+    step.durationMs = durationMs;
+    step.actionName = "turn_right_deg";
+    return true;
+  }
+
+  if (strcmp(type, "turn_left_deg") == 0) {
+    step.kind = ActionStepKind::MOVE;
+    step.dir = Direction::LEFT;
+    step.speed = normalizeMotionSpeed(requestedSpeed);
+    step.durationMs = durationMs;
+    step.actionName = "turn_left_deg";
+    return true;
+  }
+
+  if (strcmp(type, "move_forward_cm") == 0) {
+    step.kind = ActionStepKind::MOVE;
+    step.dir = Direction::FORWARD;
+    step.speed = normalizeMotionSpeed(requestedSpeed);
+    step.durationMs = durationMs;
+    step.actionName = "move_forward_cm";
+    return true;
+  }
+
+  if (strcmp(type, "move_backward_cm") == 0) {
+    step.kind = ActionStepKind::MOVE;
+    step.dir = Direction::BACKWARD;
+    step.speed = normalizeMotionSpeed(requestedSpeed);
+    step.durationMs = durationMs;
+    step.actionName = "move_backward_cm";
+    return true;
+  }
+
+  if (strcmp(type, "led_color") == 0) {
+    step.kind = ActionStepKind::LED;
+    step.durationMs = durationMs;
+    step.r = action["r"] | 0;
+    step.g = action["g"] | 0;
+    step.b = action["b"] | 0;
+    step.actionName = "led_color";
+    return true;
+  }
+
+  return false;
+}
+
+void clearSequence() {
+  sequenceRunning = false;
+  sequenceStepCount = 0;
+  sequenceStepIndex = 0;
+}
+
+void cancelActiveActions(bool setIdleLed = true) {
+  activeStepRunning = false;
+  activeStep = ActionStep{};
+  clearSequence();
+  motors.stop();
+  currentDir = Direction::STOP;
+  currentAction = "idle";
+  if (setIdleLed) {
     led.setMode(LEDMode::IDLE);
+  }
+}
+
+void startActionStep(const ActionStep& step) {
+  activeStep = step;
+  activeStepRunning = true;
+  activeStepStartedAt = millis();
+  currentAction = step.actionName;
+
+  if (step.kind == ActionStepKind::MOVE) {
+    currentDir = step.dir;
+    led.setMode(LEDMode::MOVING);
+    motors.move(step.dir, step.speed);
+    return;
+  }
+
+  currentDir = Direction::STOP;
+  led.setCustom(step.r, step.g, step.b);
+}
+
+void advanceActionQueue() {
+  if (sequenceRunning && sequenceStepIndex < sequenceStepCount) {
+    startActionStep(sequenceSteps[sequenceStepIndex++]);
+    return;
+  }
+
+  activeStepRunning = false;
+  activeStep = ActionStep{};
+  currentDir = Direction::STOP;
+  currentAction = "idle";
+  clearSequence();
+  led.setMode(LEDMode::IDLE);
+}
+
+void completeActiveStep() {
+  if (activeStep.kind == ActionStepKind::MOVE) {
+    motors.stop();
+  }
+
+  advanceActionQueue();
+}
+
+void scheduleSingleAction(const ActionStep& step) {
+  cancelActiveActions();
+  startActionStep(step);
+}
+
+void scheduleSequence(JsonArray& steps) {
+  cancelActiveActions();
+
+  for (JsonObject stepJson : steps) {
+    if (sequenceStepCount >= MAX_SEQUENCE_STEPS) {
+      Serial.printf("[BLE] Secuencia truncada a %u pasos\n", MAX_SEQUENCE_STEPS);
+      break;
+    }
+
+    ActionStep step;
+    if (buildActionStep(stepJson, step)) {
+      sequenceSteps[sequenceStepCount++] = step;
+    } else {
+      const char* type = stepJson["type"] | "";
+      Serial.printf("[BLE] Paso de secuencia ignorado: %s\n", type);
+    }
+  }
+
+  if (sequenceStepCount == 0) {
+    return;
+  }
+
+  sequenceRunning = true;
+  sequenceStepIndex = 0;
+  advanceActionQueue();
+}
+
+void updateActiveAction() {
+  if (!activeStepRunning) {
+    return;
+  }
+
+  if (millis() - activeStepStartedAt < activeStep.durationMs) {
+    return;
+  }
+
+  completeActiveStep();
 }
 
 void executePrimitiveAction(JsonObject& action) {
-  const char* type       = action["type"] | "";
-  int         requestedSpeed = action["speed"] | 0;
-  uint32_t    durationMs = action["duration_ms"] | 0;
-
-  if (strcmp(type, "turn_right_deg") == 0) {
-    uint8_t speed = normalizeMotionSpeed(requestedSpeed);
-    currentAction = "turn_right_deg";
-    currentDir = Direction::RIGHT;
-    led.setMode(LEDMode::MOVING);
-    motors.runFor(Direction::RIGHT, speed, durationMs);
-    finishMotionAction();
-
-  } else if (strcmp(type, "turn_left_deg") == 0) {
-    uint8_t speed = normalizeMotionSpeed(requestedSpeed);
-    currentAction = "turn_left_deg";
-    currentDir = Direction::LEFT;
-    led.setMode(LEDMode::MOVING);
-    motors.runFor(Direction::LEFT, speed, durationMs);
-    finishMotionAction();
-
-  } else if (strcmp(type, "move_forward_cm") == 0) {
-    uint8_t speed = normalizeMotionSpeed(requestedSpeed);
-    currentAction = "move_forward_cm";
-    currentDir = Direction::FORWARD;
-    led.setMode(LEDMode::MOVING);
-    motors.runFor(Direction::FORWARD, speed, durationMs);
-    finishMotionAction();
-
-  } else if (strcmp(type, "move_backward_cm") == 0) {
-    uint8_t speed = normalizeMotionSpeed(requestedSpeed);
-    currentAction = "move_backward_cm";
-    currentDir = Direction::BACKWARD;
-    led.setMode(LEDMode::MOVING);
-    motors.runFor(Direction::BACKWARD, speed, durationMs);
-    finishMotionAction();
-
-  } else if (strcmp(type, "led_color") == 0) {
-    currentAction = "led_color";
-    led.setCustom(action["r"] | 0, action["g"] | 0, action["b"] | 0);
-    if (durationMs > 0) {
-      delay(durationMs);
-      currentAction = "idle";
-      led.setMode(LEDMode::IDLE);
-    }
+  ActionStep step;
+  if (buildActionStep(action, step)) {
+    scheduleSingleAction(step);
   }
 }
 
@@ -160,18 +297,11 @@ void setup() {
     },
     // onStop
     []() {
-      currentAction = "stop";
-      currentDir = Direction::STOP;
-      motors.stop();
-      led.setMode(LEDMode::IDLE);
+      cancelActiveActions();
     },
     // onSequence
     [](JsonArray& steps) {
-      for (JsonObject step : steps) {
-        executePrimitiveAction(step);
-      }
-      currentAction = "idle";
-      finishMotionAction();
+      scheduleSequence(steps);
     },
     // onTelemetryRequest
     []() {
@@ -192,8 +322,7 @@ void loop() {
   bool brainOnline = bleServer.isBrainOnline();
   if (bleServer.isConnected() && !brainOnline && brainWasOnline) {
     Serial.println("[SAFETY] BRAIN_OFFLINE → STOP + LED ámbar");
-    motors.stop();
-    currentDir = Direction::STOP;
+    cancelActiveActions(false);
     led.setMode(LEDMode::BRAIN_OFFLINE);
   }
   if (brainOnline && !brainWasOnline) {
@@ -204,13 +333,15 @@ void loop() {
 
   // Seguridad sensores de distancia
   static unsigned long lastSafety = 0;
-  if (millis() - lastSafety > 100) {
+  if (millis() - lastSafety > SAFETY_CHECK_INTERVAL_MS) {
     if (safety.check(currentDir)) {
-      currentDir = Direction::STOP;
+      cancelActiveActions(false);
       led.setMode(LEDMode::ERROR_STATE);
     }
     lastSafety = millis();
   }
+
+  updateActiveAction();
 
   // Telemetría periódica
   static unsigned long lastTelemetry = 0;

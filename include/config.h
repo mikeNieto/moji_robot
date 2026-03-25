@@ -41,6 +41,7 @@
 // ─── BLUETOOTH ──────────────────────────────────────────────────────────────
 #define BLE_DEVICE_NAME        "RobotESP32"
 #define BLE_MTU_SIZE            512
+#define BLE_COMMAND_JSON_CAPACITY 2048
 #define HEARTBEAT_TIMEOUT_MS   3000  // 3s sin heartbeat → BRAIN_OFFLINE
 #define HEARTBEAT_INTERVAL_MS  1000  // Se espera un heartbeat cada 1s
 
