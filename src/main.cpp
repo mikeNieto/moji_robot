@@ -19,12 +19,11 @@ Direction currentDir = Direction::STOP;
 bool      brainWasOnline = false;
 const char* currentAction = "idle";
 
-enum class ActionStepKind { NONE, MOVE, LED };
+enum class ActionStepKind { NONE, MOVE, STOP, LED };
 
 struct ActionStep {
   ActionStepKind kind = ActionStepKind::NONE;
   Direction dir = Direction::STOP;
-  uint8_t speed = 0;
   uint32_t durationMs = 0;
   uint8_t r = 0;
   uint8_t g = 0;
@@ -42,20 +41,36 @@ unsigned long activeStepStartedAt = 0;
 bool activeStepRunning = false;
 bool sequenceRunning = false;
 
-uint8_t normalizeMotionSpeed(int requestedSpeed) {
-  if (requestedSpeed > 255) {
-    return 255;
+uint32_t clampCalculatedDuration(uint32_t durationMs) {
+  if (durationMs == 0) {
+    return 1;
   }
 
-  if (requestedSpeed > 0 && requestedSpeed < 130) {
-    return 130;
+  return durationMs;
+}
+
+uint32_t durationFromCentimeters(float centimeters) {
+  if (centimeters <= 0.0f) {
+    return 0;
   }
 
-  if (requestedSpeed < 0) {
-    return 130;
+  const float durationMs =
+    (centimeters * static_cast<float>(MOTION_MS_PER_10_CM_AT_SPEED_200)) / 10.0f;
+  return clampCalculatedDuration(static_cast<uint32_t>(durationMs + 0.5f));
+}
+
+uint32_t durationFromDegrees(float degrees) {
+  if (degrees <= 0.0f) {
+    return 0;
   }
 
-  return static_cast<uint8_t>(requestedSpeed);
+  const float durationMs =
+    (degrees * static_cast<float>(MOTION_MS_PER_90_DEG_AT_SPEED_200)) / 90.0f;
+  return clampCalculatedDuration(static_cast<uint32_t>(durationMs + 0.5f));
+}
+
+void logInvalidMovementCommand(const char* type, const char* field) {
+  Serial.printf("[BLE] Comando %s ignorado: %s invalido\n", type, field);
 }
 
 const char* directionToString(Direction dir) {
@@ -68,7 +83,7 @@ const char* directionToString(Direction dir) {
   }
 }
 
-void finishMotionAction() {
+void setRobotIdleState() {
   motors.stop();
   currentDir = Direction::STOP;
   currentAction = "idle";
@@ -77,42 +92,88 @@ void finishMotionAction() {
 
 bool buildActionStep(JsonObject& action, ActionStep& step) {
   const char* type = action["type"] | "";
-  int requestedSpeed = action["speed"] | 0;
-  uint32_t durationMs = action["duration_ms"] | 0;
+  const uint32_t durationMs = action["duration_ms"] | 0;
 
   if (strcmp(type, "turn_right_deg") == 0) {
+    const float degrees = action["degrees"] | 0.0f;
+    const uint32_t calculatedDurationMs = durationFromDegrees(degrees);
+    if (calculatedDurationMs == 0) {
+      logInvalidMovementCommand(type, "degrees");
+      return false;
+    }
+
     step.kind = ActionStepKind::MOVE;
     step.dir = Direction::RIGHT;
-    step.speed = normalizeMotionSpeed(requestedSpeed);
-    step.durationMs = durationMs;
+    step.durationMs = calculatedDurationMs;
     step.actionName = "turn_right_deg";
     return true;
   }
 
   if (strcmp(type, "turn_left_deg") == 0) {
+    const float degrees = action["degrees"] | 0.0f;
+    const uint32_t calculatedDurationMs = durationFromDegrees(degrees);
+    if (calculatedDurationMs == 0) {
+      logInvalidMovementCommand(type, "degrees");
+      return false;
+    }
+
     step.kind = ActionStepKind::MOVE;
     step.dir = Direction::LEFT;
-    step.speed = normalizeMotionSpeed(requestedSpeed);
-    step.durationMs = durationMs;
+    step.durationMs = calculatedDurationMs;
     step.actionName = "turn_left_deg";
     return true;
   }
 
-  if (strcmp(type, "move_forward_cm") == 0) {
+  if (strcmp(type, "move_forward_duration") == 0) {
     step.kind = ActionStepKind::MOVE;
     step.dir = Direction::FORWARD;
-    step.speed = normalizeMotionSpeed(requestedSpeed);
     step.durationMs = durationMs;
+    step.actionName = "move_forward_duration";
+    return true;
+  }
+
+  if (strcmp(type, "move_backward_duration") == 0) {
+    step.kind = ActionStepKind::MOVE;
+    step.dir = Direction::BACKWARD;
+    step.durationMs = durationMs;
+    step.actionName = "move_backward_duration";
+    return true;
+  }
+
+  if (strcmp(type, "move_forward_cm") == 0) {
+    const float centimeters = action["cm"] | 0.0f;
+    const uint32_t calculatedDurationMs = durationFromCentimeters(centimeters);
+    if (calculatedDurationMs == 0) {
+      logInvalidMovementCommand(type, "cm");
+      return false;
+    }
+
+    step.kind = ActionStepKind::MOVE;
+    step.dir = Direction::FORWARD;
+    step.durationMs = calculatedDurationMs;
     step.actionName = "move_forward_cm";
     return true;
   }
 
   if (strcmp(type, "move_backward_cm") == 0) {
+    const float centimeters = action["cm"] | 0.0f;
+    const uint32_t calculatedDurationMs = durationFromCentimeters(centimeters);
+    if (calculatedDurationMs == 0) {
+      logInvalidMovementCommand(type, "cm");
+      return false;
+    }
+
     step.kind = ActionStepKind::MOVE;
     step.dir = Direction::BACKWARD;
-    step.speed = normalizeMotionSpeed(requestedSpeed);
-    step.durationMs = durationMs;
+    step.durationMs = calculatedDurationMs;
     step.actionName = "move_backward_cm";
+    return true;
+  }
+
+  if (strcmp(type, "stop") == 0) {
+    step.kind = ActionStepKind::STOP;
+    step.durationMs = durationMs;
+    step.actionName = "stop";
     return true;
   }
 
@@ -156,7 +217,14 @@ void startActionStep(const ActionStep& step) {
   if (step.kind == ActionStepKind::MOVE) {
     currentDir = step.dir;
     led.setMode(LEDMode::MOVING);
-    motors.move(step.dir, step.speed);
+    motors.move(step.dir, MOTION_FIXED_SPEED);
+    return;
+  }
+
+  if (step.kind == ActionStepKind::STOP) {
+    motors.stop();
+    currentDir = Direction::STOP;
+    led.setMode(LEDMode::IDLE);
     return;
   }
 
@@ -172,15 +240,17 @@ void advanceActionQueue() {
 
   activeStepRunning = false;
   activeStep = ActionStep{};
-  currentDir = Direction::STOP;
-  currentAction = "idle";
   clearSequence();
-  led.setMode(LEDMode::IDLE);
+  setRobotIdleState();
 }
 
 void completeActiveStep() {
-  if (activeStep.kind == ActionStepKind::MOVE) {
+  if (activeStep.kind == ActionStepKind::MOVE || activeStep.kind == ActionStepKind::STOP) {
     motors.stop();
+  }
+
+  if (!sequenceRunning || sequenceStepIndex >= sequenceStepCount) {
+    setRobotIdleState();
   }
 
   advanceActionQueue();

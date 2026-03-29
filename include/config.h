@@ -15,6 +15,9 @@
 #define MOTOR_PWM_CHANNEL_B     4   // Canal LEDC Motor Derecho   (ENB)
 #define MOTOR_RAMP_STEP        10   // % por ciclo de rampa
 #define MOTOR_RAMP_DELAY_MS    50   // ms entre pasos de rampa
+#define MOTION_FIXED_SPEED    200   // PWM fijo usado por comandos BLE de movimiento
+#define MOTION_MS_PER_10_CM_AT_SPEED_200 350  // TODO: calibrar ms que tarda en avanzar 10 cm a speed 200
+#define MOTION_MS_PER_90_DEG_AT_SPEED_200 420 // TODO: calibrar ms que tarda en girar 90 grados a speed 200
 
 // ─── SENSORES DISTANCIA HC-SR04 ─────────────────────────────────────────────
 #define DIST_TRIG_FRONT  4

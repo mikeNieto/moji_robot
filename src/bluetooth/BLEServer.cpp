@@ -113,6 +113,8 @@ void RobotBLEServer::handleCommand(const char* json) {
 
   } else if ((strcmp(type, "turn_right_deg") == 0 ||
               strcmp(type, "turn_left_deg") == 0 ||
+              strcmp(type, "move_forward_duration") == 0 ||
+              strcmp(type, "move_backward_duration") == 0 ||
               strcmp(type, "move_forward_cm") == 0 ||
               strcmp(type, "move_backward_cm") == 0 ||
               strcmp(type, "led_color") == 0) && _onPrimitive) {
