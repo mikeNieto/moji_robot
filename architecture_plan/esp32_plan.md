@@ -1,6 +1,6 @@
 # Plan de Implementación ESP32 — Robot Moji
 
-**Versión:** 1.1  
+**Versión:** 1.2  
 **Fecha:** Marzo 2026  
 **Microcontrolador:** ESP32-S3 WROOM (Freenove FNK0082)  
 **Framework:** Arduino / PlatformIO
@@ -41,7 +41,7 @@
 | Componente | Especificación | Cantidad |
 |------------|---------------|----------|
 | Sensor ultrasónico | HC-SR04 (5V, detección de obstáculos) | 2 |
-| Sensor de corriente/voltaje | INA219 (I²C, high-side, batería) | 1 |
+| Sensor de voltaje | Divisor resistivo 100 kΩ / 47 kΩ hacia ADC del ESP32-S3 | 1 |
 | Sensor ToF | VL53L0X (I²C, detección de cliff/caídas) | 3 |
 
 ### Indicación Visual
@@ -64,11 +64,13 @@
 
 | Componente | Valor | Cantidad | Uso |
 |------------|-------|----------|-----|
+| Resistencia | 100 kΩ | 1 | Divisor de batería (R1: batería+ → ADC) |
+| Resistencia | 47 kΩ | 1 | Divisor de batería (R2: ADC → GND) |
 | Resistencia | 2 kΩ | 2 | Divisor HC-SR04 Echo (R1, una por sensor) |
 | Resistencia | 3 kΩ | 2 | Divisor HC-SR04 Echo (R2, una por sensor) |
 | Resistencia | 220 Ω | 3 | Protección LED RGB (una por canal R, G, B) |
 
-> **Nota**: El divisor 82 kΩ / 47 kΩ deja de ser necesario porque en esta versión del plan la batería se monitorea con un **INA219** por I²C.
+> **Nota**: El divisor `100 kΩ / 47 kΩ` reduce los `8.4V` máximos de la batería 2S a aproximadamente `2.68V` en el GPIO ADC del ESP32-S3, manteniéndose dentro del margen seguro de 3.3V.
 
 ### Herramientas y Misceláneos
 
@@ -158,7 +160,6 @@ upload_speed = 921600
 
 lib_deps =
   bblanchon/ArduinoJson@^6.21.0
-  adafruit/Adafruit INA219@^1.2.3
   pololu/VL53L0X@^1.3.1
 ```
 
@@ -217,10 +218,9 @@ Este archivo centraliza todos los pines y constantes del proyecto. Se irá compl
 #define HEARTBEAT_TIMEOUT_MS   3000  // 3s sin heartbeat → BRAIN_OFFLINE
 #define HEARTBEAT_INTERVAL_MS  1000  // Se espera un heartbeat cada 1s
 
-// ─── BUS I²C COMPARTIDO (INA219 + VL53L0X) ─────────────────────────────────
+// ─── BUS I²C (VL53L0X) ─────────────────────────────────────────────────────
 #define I2C_SDA           8
 #define I2C_SCL           9
-#define INA219_I2C_ADDRESS 0x40
 
 // ─── SENSORES CLIFF VL53L0X (I²C) ───────────────────────────────────────────
 #define XSHUT_CLIFF_FL   11   // Front-Left
@@ -231,6 +231,13 @@ Este archivo centraliza todos los pines y constantes del proyecto. Se irá compl
 #define CLIFF_CHECK_INTERVAL_MS 100
 
 // ─── BATERÍA ─────────────────────────────────────────────────────────────────
+#define BATTERY_SENSE_PIN              10
+#define BATTERY_DIVIDER_R1_OHMS   98400.0f  // R1 real medida: 100k nominal, batería+ -> ADC
+#define BATTERY_DIVIDER_R2_OHMS   45500.0f  // R2 real medida: 47k nominal, ADC -> GND
+#define BATTERY_DIVIDER_RATIO (BATTERY_DIVIDER_R2_OHMS / (BATTERY_DIVIDER_R1_OHMS + BATTERY_DIVIDER_R2_OHMS))
+#define BATTERY_ADC_RESOLUTION_BITS    12
+#define BATTERY_SENSE_SAMPLES           8
+#define BATTERY_ADC_CALIBRATION_FACTOR 1.0f // Ajustar tras comparar con multímetro
 #define BATTERY_VOLTAGE_MIN   6.0f  // V (3.0V × 2S)
 #define BATTERY_VOLTAGE_MAX   8.4f  // V (4.2V × 2S)
 #define LOW_BATTERY_THRESHOLD  10   // %
@@ -275,11 +282,11 @@ void loop() {
 ## 3. Etapa 1 — Motores y Batería
 
 ### Objetivo
-Hacer que el robot se mueva hacia adelante, hacia atrás y gire. Leer **voltaje, corriente y potencia** de la batería con un **INA219**. Al final de esta etapa el robot se podrá controlar desde el Serial Monitor y reportará telemetría básica de energía.
+Hacer que el robot se mueva hacia adelante, hacia atrás y gire. Leer el **voltaje del pack 2S** con un **divisor resistivo** conectado a un ADC del ESP32-S3. Al final de esta etapa el robot se podrá controlar desde el Serial Monitor y reportará telemetría básica de batería.
 
 ### 3.1 Alimentación y batería
 
-#### Configuración de la batería
+#### Configuración de la batería y punto de medición
 
 La batería es un pack de **6 celdas 18650 en configuración 2S3P**:
 - **2S** = 2 celdas en serie → 7.4V nominal (8.4V máximo)
@@ -287,59 +294,69 @@ La batería es un pack de **6 celdas 18650 en configuración 2S3P**:
 - El **BMS 2S 20A** protege contra sobrecarga, sobredescarga y cortocircuito
 
 ```
-[Batería 2S3P]──────[BMS 2S 20A]──────[Interruptor]──────[INA219 VIN+]
-                                                          [INA219 VIN-]──────┬──[Buck #1 5V]──[L298N VIN / Motores]
-                                                                              │
-                                                                              └──[Buck #2 5V]──[ESP32 VIN / Sensores]
+[Batería 2S3P]──────[BMS 2S 20A]──────[Interruptor]───────────────┬──[Buck #1 5V]──[L298N VIN / Motores]
+                                                                  │
+                                                                  ├──[Buck #2 5V]──[ESP32 VIN / Sensores]
+                                                                  │
+                                                                  └──[R1 100kΩ]─┬── GPIO 10 (ADC)
+                                                                                │
+                                                                              [R2 47kΩ]
+                                                                                │
+                                                                               GND
 ```
 
 > **Importante**: Nunca conectar la batería directamente al ESP32. Usar siempre Buck Converter #2 para bajar a 5V antes del pin VIN. El regulador interno del ESP32 convierte 5V → 3.3V.
 
-#### Inserción del INA219 en la línea principal de batería
+#### Montaje del divisor resistivo de batería
 
-El **INA219** permite medir en **high-side** la batería completa del robot sin mover la referencia de tierra. La colocación correcta es entre la salida principal del pack y las dos ramas que alimentan los buck converters.
-
-```
-[Batería 2S3P]──────[BMS 2S 20A]──────[Interruptor]──────[INA219 VIN+]
-                                                          [INA219 VIN-]──────┬──[Buck #1 5V]──[L298N VIN / Motores]
-                                                                              │
-                                                                              └──[Buck #2 5V]──[ESP32 VIN / Sensores]
-```
-
-> **Importante**: `VIN+` del INA219 va hacia el lado de la batería y `VIN-` hacia el lado de la carga. Si se invierten, las lecturas de corriente quedan negativas o incorrectas.
-
-#### Conexión INA219 ↔ ESP32-S3
-
-El INA219 comparte el mismo bus I²C que más adelante usarán los VL53L0X. No requiere GPIOs nuevos.
-
-> **Nota de placa**: En la **Freenove ESP32-S3 WROOM** usada por este proyecto no conviene asumir el clásico par `GPIO 21/22` de otras ESP32. En PlatformIO con el board `freenove_esp32_s3_wroom` y el core Arduino `esp32s3`, el bus I²C de este proyecto se fija en **GPIO 8 (SDA)** y **GPIO 9 (SCL)**.
+El divisor resistivo mide el voltaje total del pack sin cargarlo de forma relevante. La conexión correcta es tomar el positivo principal **después del interruptor** y escalarlo antes de entrar al ESP32-S3.
 
 ```
-INA219             ESP32-S3 / Alimentación
-──────             ───────────────────────
-VCC        ──────  3.3V del ESP32
-GND        ──────  GND común
-SDA        ──────  GPIO 8
-SCL        ──────  GPIO 9
-VIN+       ──────  Positivo principal desde interruptor / salida del BMS
-VIN-       ──────  Nodo positivo que alimenta Buck #1 y Buck #2
+[Batería+] ─── R1 100kΩ ──┬── GPIO 10 (ADC)
+                          │
+                        R2 47kΩ
+                          │
+                         GND
 ```
 
-> **Crítico**: Alimenta el INA219 con **3.3V**, no con 5V. Muchos módulos traen pull-ups I²C a `VCC`; si lo alimentas a 5V, `SDA` y `SCL` también subirán a 5V y eso no es seguro para el ESP32-S3.
+Fórmula del divisor:
 
-#### Señales recibidas desde el INA219
+`Vadc = Vbat × R2 / (R1 + R2)`
 
-Por I²C, el ESP32 recibe del INA219 estas magnitudes:
+Con `R1 = 100kΩ` y `R2 = 47kΩ`:
 
-- `bus_voltage`: voltaje en el lado de carga
-- `shunt_voltage`: caída en la resistencia shunt interna
-- `load_voltage`: estimación del voltaje real del pack hacia la carga (`bus + shunt`)
-- `current_mA`: corriente instantánea consumida por el robot
-- `power_mW`: potencia instantánea
+`Vadc = 8.4V × 47 / (100 + 47) ≈ 2.68V`
 
-Dirección I²C por defecto del INA219: `0x40`.
+Eso deja margen respecto al máximo seguro del GPIO.
 
-> **Compatibilidad con el resto del plan**: el INA219 usa `0x40`, mientras que los tres VL53L0X terminan en `0x30`, `0x31` y `0x32`. No hay conflicto de direcciones en el mismo bus.
+> **Valores reales medidos en este montaje**: `R1 = 98.4kΩ` y `R2 = 45.5kΩ`. El firmware usa esos valores reales en `config.h` para que la reconstrucción del voltaje sea más precisa desde el inicio.
+
+> **Importante**: el GND del divisor debe unirse al mismo GND del ESP32 y de los buck converters. Sin tierra común, la lectura ADC no es válida.
+
+> **Recomendado**: si la lectura oscila demasiado con motores encendidos, agrega un capacitor cerámico de `100 nF` entre `GPIO 10` y `GND`, físicamente cerca del ESP32.
+
+#### Conexión del divisor ↔ ESP32-S3
+
+El divisor usa un único GPIO ADC dedicado y no ocupa el bus I²C. Los sensores VL53L0X mantienen I²C en GPIO `8/9`.
+
+```
+Divisor de batería       ESP32-S3 / Alimentación
+──────────────────       ───────────────────────
+R1 100kΩ extremo alto ─  Positivo principal después del interruptor
+Nodo medio R1/R2     ──  GPIO 10 (ADC)
+R2 47kΩ extremo bajo ──  GND común
+```
+
+#### Señales calculadas por firmware
+
+El ESP32-S3 mide el nodo del divisor con `analogReadMilliVolts()` y reconstruye el voltaje real del pack:
+
+- `adc_mv`: milivoltios leídos directamente en el pin ADC
+- `adc_voltage`: la misma lectura expresada en voltios
+- `pack_voltage`: voltaje reconstruido del pack 2S aplicando la relación del divisor
+- `percentage`: estimación de carga entre `6.0V` y `8.4V`
+
+> **Limitación**: con este cambio ya no hay medición de corriente ni potencia. Si más adelante quieres recuperar esos datos, necesitarás otro sensor de corriente (por ejemplo INA219 nuevo, INA226 o ACS712).
 
 ### 3.2 Conexión del L298N y motores
 
@@ -467,16 +484,12 @@ void MotorController::runFor(Direction dir, uint8_t speed, uint32_t durationMs) 
 ```cpp
 #pragma once
 #include <Arduino.h>
-#include <Wire.h>
-#include <Adafruit_INA219.h>
 #include "config.h"
 
 struct BatteryReading {
-  float busVoltage = 0.0f;
-  float shuntVoltage = 0.0f;
-  float loadVoltage = 0.0f;
-  float currentmA = 0.0f;
-  float powermW = 0.0f;
+  float adcVoltage = 0.0f;
+  float packVoltage = 0.0f;
+  uint16_t adcMillivolts = 0;
   uint8_t percentage = 0;
   bool sensorOk = false;
 };
@@ -484,17 +497,16 @@ struct BatteryReading {
 class BatteryMonitor {
 public:
   bool begin();
+  bool isConnected() const;
   BatteryReading read();
   float readVoltage();
-  float readCurrentmA();
-  float readPowermW();
   uint8_t readPercentage();
   bool isLow();
 
 private:
-  Adafruit_INA219 _ina219 = Adafruit_INA219(INA219_I2C_ADDRESS);
   bool _connected = false;
 
+  float calculatePackVoltage(uint16_t adcMillivolts) const;
   uint8_t percentageFromVoltage(float voltage) const;
 };
 ```
@@ -505,17 +517,24 @@ private:
 #include "sensors/BatteryMonitor.h"
 
 bool BatteryMonitor::begin() {
-  Wire.begin(I2C_SDA, I2C_SCL);
+  pinMode(BATTERY_SENSE_PIN, INPUT);
+  analogReadResolution(BATTERY_ADC_RESOLUTION_BITS);
+  analogSetPinAttenuation(BATTERY_SENSE_PIN, ADC_11db);
 
-  _connected = _ina219.begin();
-  if (!_connected) {
-    Serial.println("[BATTERY] ERROR: INA219 no detectado en 0x40");
-    return false;
-  }
+  _connected = true;
+  Serial.printf("[BATTERY] Divisor resistivo iniciado en GPIO %d (ratio=%.4f)\n",
+                BATTERY_SENSE_PIN,
+                BATTERY_DIVIDER_RATIO);
+  return _connected;
+}
 
-  _ina219.setCalibration_32V_2A();
-  Serial.println("[BATTERY] INA219 iniciado @ 0x40");
-  return true;
+bool BatteryMonitor::isConnected() const {
+  return _connected;
+}
+
+float BatteryMonitor::calculatePackVoltage(uint16_t adcMillivolts) const {
+  const float adcVoltage = static_cast<float>(adcMillivolts) / 1000.0f;
+  return (adcVoltage / BATTERY_DIVIDER_RATIO) * BATTERY_ADC_CALIBRATION_FACTOR;
 }
 
 uint8_t BatteryMonitor::percentageFromVoltage(float voltage) const {
@@ -531,25 +550,21 @@ BatteryReading BatteryMonitor::read() {
   reading.sensorOk = _connected;
   if (!_connected) return reading;
 
-  reading.busVoltage   = _ina219.getBusVoltage_V();
-  reading.shuntVoltage = _ina219.getShuntVoltage_mV();
-  reading.loadVoltage  = reading.busVoltage + (reading.shuntVoltage / 1000.0f);
-  reading.currentmA    = _ina219.getCurrent_mA();
-  reading.powermW      = _ina219.getPower_mW();
-  reading.percentage   = percentageFromVoltage(reading.loadVoltage);
+  uint32_t totalMillivolts = 0;
+  for (uint8_t sample = 0; sample < BATTERY_SENSE_SAMPLES; ++sample) {
+    totalMillivolts += analogReadMilliVolts(BATTERY_SENSE_PIN);
+    delayMicroseconds(200);
+  }
+
+  reading.adcMillivolts = static_cast<uint16_t>(totalMillivolts / BATTERY_SENSE_SAMPLES);
+  reading.adcVoltage = static_cast<float>(reading.adcMillivolts) / 1000.0f;
+  reading.packVoltage = calculatePackVoltage(reading.adcMillivolts);
+  reading.percentage = percentageFromVoltage(reading.packVoltage);
   return reading;
 }
 
 float BatteryMonitor::readVoltage() {
-  return read().loadVoltage;
-}
-
-float BatteryMonitor::readCurrentmA() {
-  return read().currentmA;
-}
-
-float BatteryMonitor::readPowermW() {
-  return read().powermW;
+  return read().packVoltage;
 }
 
 uint8_t BatteryMonitor::readPercentage() {
@@ -557,6 +572,7 @@ uint8_t BatteryMonitor::readPercentage() {
 }
 
 bool BatteryMonitor::isLow() {
+  if (!_connected) return false;
   return readPercentage() < LOW_BATTERY_THRESHOLD;
 }
 ```
@@ -575,15 +591,14 @@ BatteryMonitor  battery;
 void printBattery() {
   BatteryReading reading = battery.read();
   if (!reading.sensorOk) {
-    Serial.println("[BATT] ERROR: INA219 no disponible");
+    Serial.println("[BATT] ERROR: ADC de batería no disponible");
     return;
   }
 
-  Serial.printf("[BATT] Bus: %.2f V | Load: %.2f V | Current: %.1f mA | Power: %.1f mW | %d%%\n",
-                reading.busVoltage,
-                reading.loadVoltage,
-                reading.currentmA,
-                reading.powermW,
+  Serial.printf("[BATT] Pack: %.2f V | ADC: %.3f V (%u mV) | %d%%\n",
+                reading.packVoltage,
+                reading.adcVoltage,
+                reading.adcMillivolts,
                 reading.percentage);
 }
 
@@ -637,23 +652,22 @@ void loop() {
 **Procedimiento**:
 
 1. Con la batería desconectada, verificar con multímetro que los Buck Converters dan exactamente 5V en su salida antes de conectar cualquier componente.
-2. Insertar el INA219 en la línea positiva principal, entre el interruptor y la distribución hacia los dos buck converters.
-3. Conectar `VCC` del INA219 a `3.3V`, `GND` a GND, `SDA` a GPIO 8 y `SCL` a GPIO 9.
+2. Montar el divisor resistivo de batería: `100 kΩ` desde el positivo principal al nodo ADC y `47 kΩ` desde ese nodo a GND.
+3. Conectar el nodo medio del divisor a `GPIO 10` del ESP32-S3. Verificar continuidad de GND común entre batería, buck converters y ESP32.
 4. Subir el código al ESP32.
 5. Abrir Serial Monitor (115200 baud).
-6. Verificar que aparece `[BATTERY] INA219 iniciado @ 0x40`. Si aparece error, revisar alimentación a 3.3V, dirección I²C y cableado `SDA/SCL`.
-7. Verificar que cada 5 segundos imprime `Bus`, `Load`, `Current` y `Power`. Comparar `Load` con el multímetro entre el positivo principal y GND.
+6. Verificar que aparece `[BATTERY] Divisor resistivo iniciado en GPIO 10`. Si la lectura es errática, revisar soldaduras, tierra común y el valor real de las resistencias.
+7. Verificar que cada 5 segundos imprime `Pack` y `ADC`. Comparar `Pack` con el multímetro entre el positivo principal y GND.
 8. Conectar el L298N y los motores (sin las ruedas si es posible, o elevando el robot).
-9. Enviar `w` → los motores deben girar hacia adelante durante 2 segundos y la corriente debe subir respecto al reposo.
+9. Enviar `w` → los motores deben girar hacia adelante durante 2 segundos y el voltaje del pack puede caer ligeramente respecto al reposo.
 10. Enviar `s` → los motores deben girar hacia atrás.
 11. Enviar `a` y `d` → el robot debe girar.
 12. Enviar `x` → los motores se deben detener inmediatamente.
 
 **Criterios de éxito**:
-- ✅ El INA219 responde en `0x40` y el firmware lo inicializa
-- ✅ `Load voltage` coincide aproximadamente (±0.1V) con el multímetro
-- ✅ La corriente en reposo es baja y aumenta al mover los motores
-- ✅ La potencia reportada es coherente con el cambio de carga
+- ✅ El firmware inicializa la lectura ADC de batería sin errores
+- ✅ `Pack voltage` coincide aproximadamente (tras calibración) con el multímetro
+- ✅ El voltaje baja un poco bajo carga y vuelve a subir en reposo
 - ✅ El robot avanza en línea recta (si no, ajustar velocidades de cada motor)
 - ✅ El robot gira en ambas direcciones
 - ✅ El comando `x` detiene los motores inmediatamente
@@ -661,10 +675,9 @@ void loop() {
 **Problemas comunes**:
 - *Un motor gira al revés*: intercambiar OUT1/OUT2 de ese motor en el L298N.
 - *Los motores no giran aunque el LED del L298N enciende*: verificar que el jumper de ENA/ENB esté **quitado** y que el pin GPIO esté enviando PWM.
-- *El INA219 no aparece*: revisar que el módulo esté alimentado con **3.3V** y que `SDA/SCL` estén en GPIO 8/9.
-- *Voltaje correcto pero corriente en cero*: verificar que la línea positiva de la batería realmente pase por `VIN+` y `VIN-` del INA219.
-- *Corriente negativa*: invertir `VIN+` y `VIN-`.
-- *Lectura saturada al arrancar motores*: usar una calibración más alta o considerar un sensor con mayor margen si el robot supera el rango del shunt.
+- *La lectura es demasiado baja o alta*: verificar que en `config.h` estén cargados los valores reales medidos de tus resistencias. Si aún hay diferencia, ajustar `BATTERY_ADC_CALIBRATION_FACTOR`.
+- *La lectura oscila mucho con motores encendidos*: agregar el capacitor de `100 nF` entre el pin ADC y GND, o aumentar `BATTERY_SENSE_SAMPLES`.
+- *La lectura se queda en 0V*: verificar que el nodo medio del divisor realmente llega al GPIO `10` y que el positivo se toma después del interruptor.
 
 ---
 
@@ -1240,13 +1253,12 @@ El ESP32 no necesita entender aliases de alto nivel como `wave`, `nod` o `shake_
   "type": "telemetry",
   "timestamp": 1234567890,
   "battery": {
-    "bus_voltage": 7.18,
-    "load_voltage": 7.21,
-    "shunt_voltage_mv": 28.0,
-    "current_ma": 410.5,
-    "power_mw": 2959.7,
+    "pack_voltage": 7.18,
+    "adc_voltage": 2.62,
+    "adc_mv": 2620,
     "percentage": 75,
-    "sensor_ok": true
+    "sensor_ok": true,
+    "measurement": "voltage_divider"
   },
   "sensors": {
     "distance_front": 150,
@@ -1643,7 +1655,7 @@ void loop() {
 6. Enviar: `{"type":"move_forward_duration","duration_ms":1500}` → el robot avanza durante 1.5 s a velocidad fija 200 y el LED se pone verde durante la acción.
 7. Enviar: `{"type":"led_color","r":0,"g":255,"b":0,"duration_ms":1000}` → el LED cambia temporalmente a verde y luego vuelve a IDLE.
 8. Enviar: `{"type":"move_sequence","steps":[{"type":"turn_right_deg","degrees":90},{"type":"stop"},{"type":"move_forward_cm","cm":15},{"type":"led_color","r":255,"g":140,"b":0,"duration_ms":600}]}` → el robot ejecuta la secuencia completa aceptando giros por grados, desplazamientos por centímetros, `stop` y `led_color`.
-9. Suscribirse a notificaciones en la característica `6E400003` (Notify). Cada 1 segundo debe llegar el JSON de telemetría con `bus_voltage`, `load_voltage`, `current_ma`, `power_mw`, distancias y estado de seguridad.
+9. Suscribirse a notificaciones en la característica `6E400003` (Notify). Cada 1 segundo debe llegar el JSON de telemetría con `pack_voltage`, `adc_voltage`, `adc_mv`, distancias y estado de seguridad.
 10. **Probar BRAIN_OFFLINE**: conectar con nRF Connect, mover el robot, y luego **no enviar heartbeats** durante 3 segundos. El robot debe:
    - Detenerse solo
    - El LED cambia a ámbar pulsante
@@ -1658,7 +1670,7 @@ void loop() {
 - ✅ `move_forward_duration` y `move_backward_duration` usan siempre velocidad fija `200`
 - ✅ Al terminar cualquier movimiento o secuencia, los motores se detienen y el LED vuelve a IDLE (azul respiración)
 - ✅ La telemetría llega cada 1 segundo a nRF Connect
-- ✅ El bloque `battery` incluye voltaje, corriente, potencia y estado del sensor INA219
+- ✅ El bloque `battery` incluye `pack_voltage`, `adc_voltage`, `adc_mv`, porcentaje y estado del monitor ADC
 - ✅ BRAIN_OFFLINE se activa a los 3s sin heartbeat
 - ✅ El robot se recupera al recibir heartbeat
 
@@ -1763,7 +1775,7 @@ El umbral `CLIFF_THRESHOLD_MM = 80` (en `config.h`) debe calibrarse según la al
    [CLIFF] Front-Right VL53L0X OK @ 0x31
    [CLIFF] Rear VL53L0X OK @ 0x32
    ```
-2. Con nRF Connect, enviar comandos de movimiento normales. Verificar que la telemetría incluye los campos `cliff_front_left`, `cliff_front_right`, `cliff_rear` en `false` y que el bloque `battery` trae `current_ma` y `power_mw`.
+2. Con nRF Connect, enviar comandos de movimiento normales. Verificar que la telemetría incluye los campos `cliff_front_left`, `cliff_front_right`, `cliff_rear` en `false` y que el bloque `battery` trae `pack_voltage`, `adc_voltage` y `adc_mv`.
 3. Colocar el robot cerca del borde de una mesa y moverlo hacia el borde. El robot debe detenerse solo **antes de caer**.
 4. Verificar que el LED cambia a rojo y que la telemetría reporta el cliff en `true`.
 5. Mover el robot de vuelta al centro de la mesa. Los sensores deben reportar `false` y el robot responde nuevamente a comandos.
@@ -1793,8 +1805,9 @@ El umbral `CLIFF_THRESHOLD_MM = 80` (en `config.h`) debe calibrarse según la al
 | 5  | HC-SR04 Frontal — Echo | Entrada — ¡divisor resistivo 2kΩ+3kΩ! |
 | 6  | HC-SR04 Trasero — Trigger | Salida digital |
 | 7  | HC-SR04 Trasero — Echo | Entrada — ¡divisor resistivo 2kΩ+3kΩ! |
-| 8  | I²C SDA (INA219 + VL53L0X × 3) | Bus compartido |
-| 9  | I²C SCL (INA219 + VL53L0X × 3) | Bus compartido |
+| 8  | I²C SDA (VL53L0X × 3) | Bus compartido |
+| 9  | I²C SCL (VL53L0X × 3) | Bus compartido |
+| 10 | Batería — ADC por divisor 100kΩ/47kΩ | Entrada analógica |
 | 11 | XSHUT VL53L0X Cliff Front-Left | control I²C address |
 | 12 | XSHUT VL53L0X Cliff Front-Right | control I²C address |
 | 13 | XSHUT VL53L0X Cliff Rear | control I²C address |

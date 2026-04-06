@@ -1,21 +1,24 @@
 #include "sensors/BatteryMonitor.h"
 
 bool BatteryMonitor::begin() {
-  Wire.begin(I2C_SDA, I2C_SCL);
+  pinMode(BATTERY_SENSE_PIN, INPUT);
+  analogReadResolution(BATTERY_ADC_RESOLUTION_BITS);
+  analogSetPinAttenuation(BATTERY_SENSE_PIN, ADC_11db);
 
-  _connected = _ina219.begin();
-  if (!_connected) {
-    Serial.println("[BATTERY] ERROR: INA219 no detectado en 0x40");
-    return false;
-  }
-
-  _ina219.setCalibration_32V_2A();
-  Serial.println("[BATTERY] INA219 iniciado @ 0x40");
-  return true;
+  _connected = true;
+  Serial.printf("[BATTERY] Divisor resistivo iniciado en GPIO %d (ratio=%.4f)\n",
+                BATTERY_SENSE_PIN,
+                BATTERY_DIVIDER_RATIO);
+  return _connected;
 }
 
 bool BatteryMonitor::isConnected() const {
   return _connected;
+}
+
+float BatteryMonitor::calculatePackVoltage(uint16_t adcMillivolts) const {
+  const float adcVoltage = static_cast<float>(adcMillivolts) / 1000.0f;
+  return (adcVoltage / BATTERY_DIVIDER_RATIO) * BATTERY_ADC_CALIBRATION_FACTOR;
 }
 
 uint8_t BatteryMonitor::percentageFromVoltage(float voltage) const {
@@ -31,25 +34,21 @@ BatteryReading BatteryMonitor::read() {
   reading.sensorOk = _connected;
   if (!_connected) return reading;
 
-  reading.busVoltage   = _ina219.getBusVoltage_V();
-  reading.shuntVoltage = _ina219.getShuntVoltage_mV();
-  reading.loadVoltage  = reading.busVoltage + (reading.shuntVoltage / 1000.0f);
-  reading.currentmA    = _ina219.getCurrent_mA();
-  reading.powermW      = _ina219.getPower_mW();
-  reading.percentage   = percentageFromVoltage(reading.loadVoltage);
+  uint32_t totalMillivolts = 0;
+  for (uint8_t sample = 0; sample < BATTERY_SENSE_SAMPLES; ++sample) {
+    totalMillivolts += analogReadMilliVolts(BATTERY_SENSE_PIN);
+    delayMicroseconds(200);
+  }
+
+  reading.adcMillivolts = static_cast<uint16_t>(totalMillivolts / BATTERY_SENSE_SAMPLES);
+  reading.adcVoltage = static_cast<float>(reading.adcMillivolts) / 1000.0f;
+  reading.packVoltage = calculatePackVoltage(reading.adcMillivolts);
+  reading.percentage = percentageFromVoltage(reading.packVoltage);
   return reading;
 }
 
 float BatteryMonitor::readVoltage() {
-  return read().loadVoltage;
-}
-
-float BatteryMonitor::readCurrentmA() {
-  return read().currentmA;
-}
-
-float BatteryMonitor::readPowermW() {
-  return read().powermW;
+  return read().packVoltage;
 }
 
 uint8_t BatteryMonitor::readPercentage() {

@@ -1,7 +1,7 @@
 #include <Arduino.h>
 #include "config.h"
 #include "motors/MotorController.h"
-// #include "sensors/BatteryMonitor.h"
+#include "sensors/BatteryMonitor.h"
 #include "sensors/DistanceSensor.h"
 #include "safety/SafetyMonitor.h"
 #include "leds/LEDController.h"
@@ -9,7 +9,7 @@
 #include <ArduinoJson.h>
 
 MotorController  motors;
-// BatteryMonitor   battery;
+BatteryMonitor   battery;
 DistanceSensor   frontSensor(DIST_TRIG_FRONT, DIST_ECHO_FRONT, "FRONTAL");
 DistanceSensor   rearSensor (DIST_TRIG_REAR,  DIST_ECHO_REAR,  "TRASERO");
 SafetyMonitor    safety(frontSensor, rearSensor, motors);
@@ -312,16 +312,15 @@ String buildTelemetry() {
   doc["type"]      = "telemetry";
   doc["timestamp"] = millis();
 
-//   BatteryReading battReading = battery.read();
+  BatteryReading battReading = battery.read();
 
   JsonObject batt = doc.createNestedObject("battery");
-//   batt["bus_voltage"]      = battReading.busVoltage;
-//   batt["load_voltage"]     = battReading.loadVoltage;
-//   batt["shunt_voltage_mv"] = battReading.shuntVoltage;
-//   batt["current_ma"]       = battReading.currentmA;
-//   batt["power_mw"]         = battReading.powermW;
-//   batt["percentage"]       = battReading.percentage;
-//   batt["sensor_ok"]        = battReading.sensorOk;
+  batt["pack_voltage"] = battReading.packVoltage;
+  batt["adc_voltage"]  = battReading.adcVoltage;
+  batt["adc_mv"]       = battReading.adcMillivolts;
+  batt["percentage"]   = battReading.percentage;
+  batt["sensor_ok"]    = battReading.sensorOk;
+  batt["measurement"]  = "voltage_divider";
 
   JsonObject sens = doc.createNestedObject("sensors");
   sens["distance_front"] = frontSensor.readCm();
@@ -353,7 +352,7 @@ void setup() {
   Serial.println("=== MOJI ESP32 — Etapa 4: BLE ===");
 
   motors.begin();
-  // battery.begin();
+  battery.begin();
   frontSensor.begin();
   rearSensor.begin();
   led.begin();
@@ -423,5 +422,5 @@ void loop() {
   }
 
   // Batería baja
-//   if (battery.isLow()) led.setMode(LEDMode::LOW_BATTERY);
+  // if (battery.isLow()) led.setMode(LEDMode::LOW_BATTERY);
 }

@@ -48,10 +48,9 @@
 #define HEARTBEAT_TIMEOUT_MS   3000  // 3s sin heartbeat → BRAIN_OFFLINE
 #define HEARTBEAT_INTERVAL_MS  1000  // Se espera un heartbeat cada 1s
 
-// ─── BUS I²C COMPARTIDO (INA219 + VL53L0X) ─────────────────────────────────
+// ─── BUS I²C (VL53L0X) ─────────────────────────────────────────────────────
 #define I2C_SDA           8
 #define I2C_SCL           9
-#define INA219_I2C_ADDRESS 0x40
 
 // ─── SENSORES CLIFF VL53L0X (I²C) ───────────────────────────────────────────
 #define XSHUT_CLIFF_FL   11   // Front-Left
@@ -62,6 +61,13 @@
 #define CLIFF_CHECK_INTERVAL_MS 100
 
 // ─── BATERÍA ─────────────────────────────────────────────────────────────────
+#define BATTERY_SENSE_PIN              10
+#define BATTERY_DIVIDER_R1_OHMS   98400.0f  // R1 real medida: 100k nominal, batería+ -> ADC
+#define BATTERY_DIVIDER_R2_OHMS   45500.0f  // R2 real medida: 47k nominal, ADC -> GND
+#define BATTERY_DIVIDER_RATIO (BATTERY_DIVIDER_R2_OHMS / (BATTERY_DIVIDER_R1_OHMS + BATTERY_DIVIDER_R2_OHMS))
+#define BATTERY_ADC_RESOLUTION_BITS    12
+#define BATTERY_SENSE_SAMPLES           8
+#define BATTERY_ADC_CALIBRATION_FACTOR 1.0f // Ajustar tras comparar con multímetro
 #define BATTERY_VOLTAGE_MIN   6.0f  // V (3.0V × 2S)
 #define BATTERY_VOLTAGE_MAX   8.4f  // V (4.2V × 2S)
 #define LOW_BATTERY_THRESHOLD  10   // %
